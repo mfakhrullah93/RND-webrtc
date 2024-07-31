@@ -116,6 +116,11 @@ func (c *Client) writePump() {
 	}
 }
 
+type SDPMessage struct {
+	SDP  string `json:"sdp"`
+	Type string `json:"type"`
+}
+
 // serveWs handles websocket requests from the peer.
 func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -123,6 +128,11 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 		return
 	}
+
+	// Parse incoming SDP offer
+	var offer SDPMessage
+	log.Println("newclient", offer)
+	
 	client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256)} // TODO Client
 	client.hub.register <- client																					// TODO Register Client
 
