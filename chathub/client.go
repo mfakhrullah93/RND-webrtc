@@ -31,6 +31,15 @@ var (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		if(r.Header.Get("Origin") == "http://localhost:4200"){
+			return true
+		}
+		if(r.Header.Get("Origin") == "http://localhost:8080"){
+			return true
+		}
+		return false 
+	},
 }
 
 // Client is a middleman between the websocket connection and the hub.
@@ -132,7 +141,7 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	// Parse incoming SDP offer
 	var offer SDPMessage
 	log.Println("newclient", offer)
-	
+
 	client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256)} // TODO Client
 	client.hub.register <- client																					// TODO Register Client
 
