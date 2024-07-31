@@ -1,4 +1,4 @@
-module example-pion
+module webrtc
 
 go 1.22.4
 
@@ -9,6 +9,7 @@ require (
 
 require (
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/gorilla/websocket v1.5.3
 	github.com/pion/datachannel v1.5.8 // indirect
 	github.com/pion/dtls/v2 v2.2.12 // indirect
 	github.com/pion/dtls/v3 v3.0.0 // indirect
