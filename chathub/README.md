@@ -95,3 +95,5 @@ scroll position is not changed.
 
 The form handler writes the user input to the websocket and clears the input
 field.
+
+`**This code is based on an example from Gorilla WebSocket. It will be modified as new ideas and project requirements emerge.**`

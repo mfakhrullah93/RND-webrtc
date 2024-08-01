@@ -13,7 +13,7 @@ import (
 
 func main() {
 	// TODO
-	publicIP := "0.0.0.0" //! from https://www.whatismyip.com/
+	publicIP := "0.0.0.0" //! Local Test
 	address := "0.0.0.0:3478"
 	users := "user123"
 	realm := "mfakhrullah.com"
@@ -33,13 +33,6 @@ func main() {
 	}
 
 	fmt.Println("Listening to:", address)
-
-	// Cache -users flag for easy lookup later
-	// TODO If passwords are stored they should be saved to your DB hashed using turn.GenerateAuthKey
-	// usersMap := map[string][]byte{}
-	// for _, kv := range regexp.MustCompile(`(\w+)=(\w+)`).FindAllStringSubmatch(users, -1) {
-	// 	usersMap[kv[1]] = turn.GenerateAuthKey(kv[1], realm, kv[2])
-	// }
 
 	s, err := turn.NewServer(turn.ServerConfig{
 		Realm: realm,
