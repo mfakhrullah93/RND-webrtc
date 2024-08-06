@@ -43,34 +43,34 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// Client is a middleman between the websocket connection and the hub.
-type Client struct {
-	hub *Hub
+const (
+	JOINCHANNEL = 1	
+)
+
+type Channel struct{	
+	done 			chan bool
 
 	// The websocket connection.
-	conn *websocket.Conn
+	conn		*websocket.Conn
+
+	// Registered Peer
+	peer     	*Peer
 
 	// Buffered channel of outbound messages.
-	send chan []byte
+	send 			chan []byte
 }
 
-// Offer is a SDP offer from webrtc peer connection.
 type Offer interface{}
 
+type Message struct {
+	P2P P2P `json:"p2p"`
+}
 // P2P structure either 3 will be broadcast for p2p comm.
 type P2P struct {
-	Initiate Offer `json:"initiate"`
-	Answer Offer `json:"answer"`
+	Initiate 	Offer 			`json:"initiate"`
+	Answer 		Offer 			`json:"answer"`
 	Candidate interface{} `json:"candidate"`
 	Activity 	int 				`json:"activity"`
-}
-
-// Message structure. 
-// The Message string is to broadcast normal string message
-// P2P is a struct for p2p comm
-type Message struct {
-	Message string `json:"message"`
-	P2P P2P `json:"p2p"`
 }
 
 // readPump pumps messages from the websocket connection to the hub.
@@ -78,61 +78,53 @@ type Message struct {
 // The application runs readPump in a per-connection goroutine. The application
 // ensures that there is at most one reader on a connection by executing all
 // reads from this goroutine.
-func (c *Client) readPump() {
+func (c *Channel) readSignal() {
 	defer func() {
-		c.hub.unregister <- c
+		c.peer.unregister <- c
 		c.conn.Close()
 	}()
 	c.conn.SetReadLimit(maxMessageSize)
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error { c.conn.SetReadDeadline(time.Now().Add(pongWait)); return nil })
+
 	for {
 		_, message, err := c.conn.ReadMessage()
+
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("error: %v", err)
 			}
-			break
+			
+			c.done <- true
+			break;
 		}
 
 		message = bytes.TrimSpace(bytes.Replace(message, newline, space, -1))
 		log.Printf("JSON string Message: %s", message)
 		
-		// Create an instance of the message struct
-		var msgStruct Message
-
-		// Unmarshal the JSON string into the struct
-		err = json.Unmarshal(message, &msgStruct)
+		// var p2pMsg P2P
+		var msg Message
+		err = json.Unmarshal(message, &msg)
 		if err != nil {
 			log.Fatalf("Error unmarshalling JSON: %v", err)
 		}
-
-		// Log the unmarshalled struct in a readable format
-		log.Printf("Unmarshalled Message: %+v", msgStruct)
-
-		c.handlePumpToHub(&msgStruct)
-
-		// c.hub.broadcast <- BroadcastMessage{message: message, sender: c}
-	}
-}
-
-// Handle messages from websocket connection to pump to the hub 
-func (c *Client) handlePumpToHub(message *Message) {
-	var messageToPump []byte
-	var err error
-
-	// broadcast normal message
-	if message.Message != "" { 
-		messageToPump = []byte(message.Message)
-		c.hub.broadcast <- BroadcastMessage{message: messageToPump, sender: c}
-
-	} else { 
-		// broadcast p2p message
-		messageToPump, err = json.Marshal(message.P2P)
-		if err != nil {
-			log.Fatalf("Error marshalling JSON: %v", err)
+		
+		log.Printf("Unmarshalled Message: %+v", msg)			
+		
+		if msg.P2P.Activity == JOINCHANNEL {			
+			// Log the unmarshalled struct in a readable format
+			log.Printf("Unmarshalled Message: %+v", msg)			
+			// Do something like create offer and send offer to user
+			c.peer.offer <- c.peer.createOffer()
 		}
-		c.hub.broadcast <- BroadcastMessage{message: messageToPump, sender: c}
+
+		if msg.P2P.Answer != nil {			
+			// Log the unmarshalled struct in a readable format
+			log.Printf("Unmarshalled Message: %+v", msg)			
+			// Do something like to complete p2p connection
+		}
+
+
 	}
 }
 
@@ -141,7 +133,7 @@ func (c *Client) handlePumpToHub(message *Message) {
 // A goroutine running writePump is started for each connection. The
 // application ensures that there is at most one writer to a connection by
 // executing all writes from this goroutine.
-func (c *Client) writePump() {
+func (c *Channel) sendSignal() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
@@ -183,18 +175,18 @@ func (c *Client) writePump() {
 }
 
 // serveWs handles websocket requests from the peer.
-func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
+func serveChannel(peer *Peer, w http.ResponseWriter, r *http.Request) {	
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println(err)
 		return
 	}
-
-	client := &Client{hub: hub, conn: conn, send: make(chan []byte, 256)} // TODO New Client
-	client.hub.register <- client																					// TODO Register Client
+	
+	channel := &Channel{peer: peer, conn: conn, send: make(chan []byte, 256)} // TODO New Client
+	channel.peer.register <- channel																					// TODO Register Client
 
 	// Allow collection of memory referenced by the caller by doing all work in
 	// new goroutines.
-	go client.writePump()
-	go client.readPump()
+	go channel.sendSignal()
+	go channel.readSignal()
 }
