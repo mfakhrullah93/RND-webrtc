@@ -6,6 +6,9 @@ type Hub struct {
 	// Registered clients.
 	clients map[*Client]bool
 
+	// Active stream.
+	stream map[StreamId]*Stream
+
 	// Inbound messages from the clients.
 	broadcast chan []byte
 
@@ -25,6 +28,7 @@ type Hub struct {
 func newHub() *Hub {
 	return &Hub{
 		clients:    		make(map[*Client]bool),
+		stream:    			make(map[StreamId]*Stream),
 		broadcast:  		make(chan []byte),
 		register:   		make(chan *Client),
 		unregister: 		make(chan *Client),

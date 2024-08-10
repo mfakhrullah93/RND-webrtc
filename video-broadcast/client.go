@@ -58,20 +58,19 @@ type Offer struct {
 
 type P2P struct {
 	Initiate 	Offer 			`json:"initiate"`
+	Answer 	Offer 				`json:"answer"`
 	Candidate interface{} `json:"candidate"`
 	Activity 	int 				`json:"activity"`
 }
 
 type Message struct {
+	Streamid StreamId	`json:"streamid"`
 	P2P P2P `json:"p2p"`
 }
 
 // Client is a middleman between the websocket connection and the hub.
 type Client struct {
 	hub 		*Hub
-
-	// Keep client channel data 
-	channel *Channel
 
 	// The websocket connection.
 	wsConn 	*websocket.Conn
@@ -118,28 +117,28 @@ func (c *Client) readPump() {
 		}
 
 		// log.Printf("received msg: %+v", msg)
-		
+
 		// Handle incoming activity as publisher
 		if msg.P2P.Activity == PUBLISH { 			
-			if msg.P2P.Initiate.Type == "offer" { 
-				ok := c.publisher.handleActivity(c, msg.P2P.Initiate.SDP)
-				if !ok { break; }
-			}		
+			offer := &msg.P2P.Initiate
+
 			if msg.P2P.Candidate != nil { 
-				ok := c.publisher.peer.addCandidate(msg.P2P.Candidate) 
-				if !ok { break; }
-			} 
+				c.publisher.peer.addCandidate(msg.P2P.Candidate) 
+			} else {				
+				ok := c.publishStream(offer, msg.Streamid)
+				if !ok { break; } // TODO dont break. notify error properly
+			}
 		}
 
 		if msg.P2P.Activity == JOIN { 			
-			if msg.P2P.Initiate.Type == "offer" { 
-				ok := c.participant.handleActivity(c, msg.P2P.Initiate.SDP)
-				if !ok { break; }
-			}		
+			offer := &msg.P2P.Initiate
+			
 			if msg.P2P.Candidate != nil { 
-				ok := c.participant.peer.addCandidate(msg.P2P.Candidate) 
-				if !ok { break; }
-			} 
+				c.participant.peer.addCandidate(msg.P2P.Candidate) 
+			} else {
+				ok := c.joinStream(offer, msg.Streamid)
+				if !ok { break; } // TODO dont break. notify error properly
+			}
 		}
 
 	}
@@ -191,6 +190,25 @@ func (c *Client) writePump() {
 	}
 }
 
+func (c *Client) publishStream(offer *Offer, id StreamId) bool {
+	if offer.Type != "offer" { return false }
+	
+	newStream := newStream(id)
+	c.publisher.stream = newStream
+	c.hub.stream[id] = newStream
+
+	return c.publisher.handlePeerConnection(offer.SDP)
+}
+
+func (c *Client) joinStream(offer *Offer, id StreamId) bool {
+	if offer.Type != "offer" { return false }
+	
+	joinStream := c.hub.stream[id]
+	c.participant.stream = joinStream
+
+	return c.participant.handlePeerConnection(offer.SDP)
+}
+
 // serveWs handles websocket requests from the peer.
 func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	wsConn, err := upgrader.Upgrade(w, r, nil)
@@ -198,14 +216,12 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		log.Println(err)
 		return
 	}
-
 	// Initialize peer.
 	// Peer connection will be handle at incoming client message.
 	// Peer connection is for publisher and participant.
 	peer := &Peer{}
-	publisher := &Publisher{ peer: peer }
-	participant := &Participant{ peer: peer }
-	channel := &Channel{}
+	publisher := &Publisher{ peer: peer, hub: hub }
+	participant := &Participant{ peer: peer, hub: hub, receivedtrack: make(chan bool)}
 
 	// New Client
 	// There will be only 1 active peer connection, either as publisher or participant
@@ -213,14 +229,12 @@ func serveWs(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	client := &Client{
 		publisher: publisher, 
 		participant: participant, 
-		channel: channel,
 		hub: hub, 
 		wsConn: wsConn, 
 		send: make(chan []byte, 256),	
 	}
 
 	client.hub.register <- client
-
 	// Allow collection of memory referenced by the caller by doing all work in
 	// new goroutines.
 	go client.writePump()

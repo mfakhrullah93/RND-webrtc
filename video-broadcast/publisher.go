@@ -12,21 +12,25 @@ import (
 )
 
 type Publisher struct {
+	hub *Hub
 	peer *Peer
+	stream *Stream	
 }
 
-func (pb *Publisher) handleActivity(client *Client, sdp string) bool {
+func (pb *Publisher) handlePeerConnection(sdp string) bool {
 	pb.initPeerConnection()
-	pb.peer.handleIceCandidate(client)
+	pb.handleIceCandidate()
 	answer := pb.peer.createAnswer(sdp) 
+
+	msg := Message{P2P: P2P{Activity: PUBLISH, Answer: Offer{SDP: answer.SDP, Type: answer.Type.String()}}}
 	
-	json, err := json.Marshal(answer)
+	json, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("Failed to Marshal message: %s\n", err.Error())
 		return false
 	}	
 	
-	client.hub.sendAnswer <- json
+	pb.hub.sendAnswer <- json
 
 	return true
 }
@@ -63,32 +67,87 @@ func (pb *Publisher) initPeerConnection() {
 	}
 
 	pb.peer.conn = peerConnection
-	pb.peer.handleConnectionState()
+	pb.handleConnectionState()
 	pb.handlePeerTrack()
 }
 
+func (pb *Publisher) handleConnectionState() {
+	// Set the handler for Peer connection state
+	// This will notify you when the peer has connected/disconnected
+	pb.peer.conn.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+		log.Printf("Publisher Connection State has changed: %s\n", s.String())
+
+		if s == webrtc.PeerConnectionStateFailed {
+			// Wait until PeerConnection has had no network activity for 30 seconds or another failure. It may be reconnected using an ICE Restart.
+			// Use webrtc.PeerConnectionStateDisconnected if you are interested in detecting faster timeout.
+			// Note that the PeerConnection may come back from PeerConnectionStateDisconnected.
+			log.Println("Publisher Connection has gone to failed exiting")
+		}
+
+		if s == webrtc.PeerConnectionStateClosed {
+			// PeerConnection was explicitly closed. This usually happens from a DTLS CloseNotify
+			log.Println("Publisher Connection has gone to closed exiting")		
+		}
+
+		if s == webrtc.PeerConnectionStateConnected {
+			// Broadcast track to incoming Participant in stream server
+			pb.stream.serveStream()
+		}
+
+	})	
+}
+
+func (pb *Publisher)handleIceCandidate() {	
+	
+	msg := Message{P2P: P2P{Activity: PUBLISH}}
+
+	// When an ICE candidate is available send to the user Peer
+	pb.peer.conn.OnICECandidate(func(c *webrtc.ICECandidate) {		
+		if c == nil { return }
+
+		msg.P2P.Candidate = c
+
+		json, err := json.Marshal(msg)
+		if err != nil {
+			log.Printf("Failed to Marshal message: %s\n", err.Error())
+		}	
+		
+		pb.hub.sendCandidate <- json
+	})
+}
+
 func (pb *Publisher) handlePeerTrack() {
-	// TODO find out who own this localtrack. maybe channel
-	localTrackChan := make(chan *webrtc.TrackLocalStaticRTP)
+	
+	// Allow us to receive 1 video track
+	if _, err := pb.peer.conn.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo); err != nil {
+		log.Printf("Failed to AddTransceiverFromKind: %s\n", err.Error())
+	}
+
+	// webrtc.TrackRemote represents the remote media track (e.g., video or audio) that you've received from the peer.
+	// The video stream data is actually from the RTP packets from the track.Read()
 	pb.peer.conn.OnTrack(func(remoteTrack *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) { //nolint: revive
+		
 		// Create a local track, all our SFU clients will be fed via this track
 		localTrack, newTrackErr := webrtc.NewTrackLocalStaticRTP(remoteTrack.Codec().RTPCodecCapability, "video", "pion")
 		if newTrackErr != nil {
 			log.Printf("Failed to create NewTrackLocalStaticRTP: %s\n", newTrackErr.Error())
 		}
 
-		localTrackChan <- localTrack
+		pb.stream.streamTrack <- localTrack // send track to channel
 
-		rtpBuf := make([]byte, 1400)
+		rtpBuf := make([]byte, 1400)  // Allocates a buffer for reading RTP packets from the remote track
 		for {
+
+			// Reads RTP packets from the remoteTrack into the buffer rtpBuf
 			i, _, readErr := remoteTrack.Read(rtpBuf)
 			if readErr != nil {
 				log.Printf("Failed to remoteTrack.Read: %s\n", readErr.Error())
 			}
 
+			// Writes the read RTP packets to the local track
 			// ErrClosedPipe means we don't have any subscribers, this is ok if no peers have connected yet
 			if _, err := localTrack.Write(rtpBuf[:i]); err != nil && !errors.Is(err, io.ErrClosedPipe) {
-				log.Printf("Failed to localTrack.Write: %s\n", err.Error())
+				log.Printf("Failed to localTrack.Write (Maybe no peers is connected): %s\n", err.Error())
 			}
 		}
 	})
